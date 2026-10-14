@@ -8,6 +8,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
   :root {
     --bg: #0a0f1e;
@@ -27,6 +28,9 @@
   }
 
   * { margin:0; padding:0; box-sizing:border-box; }
+  #appLoader { position:fixed;inset:0;z-index:9999;background:rgba(10,15,30,.88);display:none;align-items:center;justify-content:center;backdrop-filter:blur(4px); }
+  .loader-spinner { width:52px;height:52px;border:3px solid rgba(0,212,170,.2);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
 
   body {
     font-family: 'DM Sans', sans-serif;
@@ -900,7 +904,16 @@
   </div>
 </div>
 
+<div id="appLoader"><div style="text-align:center"><div class="loader-spinner"></div><div style="color:var(--muted);font-size:14px;margin-top:16px">Cargando...</div></div></div>
+
 <script>
+// ═══════════════════════════════════════════
+//   SUPABASE CONFIG — reemplaza con tus credenciales
+// ═══════════════════════════════════════════
+const SUPABASE_URL  = 'https://TU_PROYECTO.supabase.co';
+const SUPABASE_ANON = 'TU_ANON_KEY';
+const supa = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+
 // ═══════════════════════════════════════════
 //   UTILIDADES
 // ═══════════════════════════════════════════
@@ -919,25 +932,47 @@ function fmt(n){ return (n < 0 ? '-$' : '$') + Math.abs(Number(n||0)).toLocaleSt
 function formatDate(d){ if(!d) return '—'; const [y,m,day] = d.split('-'); return `${parseInt(day)} ${MESES_C[parseInt(m)-1]} ${y}`; }
 const sum = arr => arr.reduce((s,t) => s + t.amount, 0);
 
-// SHA-256 compacto (sin dependencias, funciona también en file://)
-function sha256(ascii){function r(v,a){return(v>>>a)|(v<<(32-a))}var mp=Math.pow,maxWord=mp(2,32),result='',words=[],asciiBitLength=ascii.length*8,hash=sha256.h=sha256.h||[],k=sha256.k=sha256.k||[],primeCounter=k.length,isComposite={},i,j;for(var candidate=2;primeCounter<64;candidate++){if(!isComposite[candidate]){for(i=0;i<313;i+=candidate){isComposite[i]=candidate}hash[primeCounter]=(mp(candidate,.5)*maxWord)|0;k[primeCounter++]=(mp(candidate,1/3)*maxWord)|0}}ascii+='\x80';while(ascii.length%64-56)ascii+='\x00';for(i=0;i<ascii.length;i++){j=ascii.charCodeAt(i);if(j>>8)return;words[i>>2]|=j<<((3-i)%4)*8}words[words.length]=((asciiBitLength/maxWord)|0);words[words.length]=(asciiBitLength);for(j=0;j<words.length;){var w=words.slice(j,j+=16),oldHash=hash;hash=hash.slice(0,8);for(i=0;i<64;i++){var w15=w[i-15],w2=w[i-2];var a=hash[0],e=hash[4];var temp1=hash[7]+(r(e,6)^r(e,11)^r(e,25))+((e&hash[5])^((~e)&hash[6]))+k[i]+(w[i]=(i<16)?w[i]:(w[i-16]+(r(w15,7)^r(w15,18)^(w15>>>3))+w[i-7]+(r(w2,17)^r(w2,19)^(w2>>>10)))|0);var temp2=(r(a,2)^r(a,13)^r(a,22))+((a&hash[1])^(a&hash[2])^(hash[1]&hash[2]));hash=[(temp1+temp2)|0].concat(hash);hash[4]=(hash[4]+temp1)|0}for(i=0;i<8;i++){hash[i]=(hash[i]+oldHash[i])|0}}for(i=0;i<8;i++){for(j=3;j+1;j--){var b=(hash[i]>>(j*8))&255;result+=((b<16)?0:'')+b.toString(16)}}return result}
-const hashPass = (pass, salt) => sha256(unescape(encodeURIComponent(salt + ':' + pass)));
+// ═══════════════════════════════════════════
+//   ESTADO EN MEMORIA (caché sincrónico)
+// ═══════════════════════════════════════════
+const state = { users:[], txs:[], cuotas:{}, budgets:{}, config:{}, audit:[] };
 
 // ═══════════════════════════════════════════
-//   ALMACENAMIENTO (localStorage)
+//   MAPEO DB ↔ APP
 // ═══════════════════════════════════════════
-const K = { users:'cf_users', txs:'cf_txs', session:'cf_session', budgets:'cf_budgets', cuotas:'cf_cuotas', config:'cf_config', audit:'cf_audit' };
-const DB = {
-  get: (k, def=[]) => { try { return JSON.parse(localStorage.getItem(k)) ?? def; } catch { return def; } },
-  set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { toast('No se pudo guardar (almacenamiento lleno o bloqueado)','error'); } },
-};
-const getUsers   = () => DB.get(K.users, []);
-const getTxs     = () => DB.get(K.txs, []);
-const getBudgets = () => DB.get(K.budgets, {});
-const getCuotas  = () => DB.get(K.cuotas, {});
-const getConfig  = () => ({ name:'Mi Comunidad', cuota:50000, dueDay:10, ...DB.get(K.config, {}) });
-const saveUsers  = v => DB.set(K.users, v);
-const saveTxs    = v => DB.set(K.txs, v);
+const dbToTx = r => ({ id:r.id, desc:r.description, amount:Number(r.amount), date:r.date?.slice(0,10), cat:r.cat, method:r.method, ref:r.ref, notes:r.notes, type:r.type, user:r.user_id, member:r.member_id, createdAt:r.created_at, updatedAt:r.updated_at, updatedBy:r.updated_by });
+const txToDb = t => ({ id:t.id, description:t.desc, amount:t.amount, date:t.date, cat:t.cat, method:t.method||null, ref:t.ref||null, notes:t.notes||null, type:t.type, user_id:t.user||null, member_id:t.member||null, created_at:t.createdAt||new Date().toISOString(), updated_at:t.updatedAt||null, updated_by:t.updatedBy||null });
+const dbToUser = r => ({ id:r.id, name:r.name, email:r.email||'', role:r.role, active:r.active, createdAt:r.created_at });
+const userToDb = u => ({ id:u.id, name:u.name, email:u.email||'', role:u.role, active:u.active, created_at:u.createdAt||new Date().toISOString() });
+
+// ═══════════════════════════════════════════
+//   GETTERS (síncronos, leen del caché)
+// ═══════════════════════════════════════════
+const getUsers   = () => state.users;
+const getTxs     = () => state.txs;
+const getBudgets = () => state.budgets;
+const getCuotas  = () => state.cuotas;
+const getConfig  = () => ({ name:'Mi Comunidad', cuota:50000, dueDay:10, ...state.config });
+
+// ═══════════════════════════════════════════
+//   CARGA DE DATOS DESDE SUPABASE
+// ═══════════════════════════════════════════
+async function loadAllData(){
+  const [pr,tr,cr,br,cfr,ar] = await Promise.all([
+    supa.from('profiles').select('*').order('created_at'),
+    supa.from('transactions').select('*').order('date',{ascending:false}).order('created_at',{ascending:false}),
+    supa.from('cuotas').select('*'),
+    supa.from('budgets').select('*'),
+    supa.from('app_config').select('*').eq('id',1).single(),
+    supa.from('audit_log').select('*').order('ts',{ascending:false}).limit(1000),
+  ]);
+  state.users = (pr.data||[]).map(dbToUser);
+  state.txs   = (tr.data||[]).map(dbToTx);
+  const cm = {}; (cr.data||[]).forEach(c => { cm[c.cuota_key]=c.tx_id; }); state.cuotas = cm;
+  const bm = {}; (br.data||[]).forEach(b => { bm[b.cat]=Number(b.amount); }); state.budgets = bm;
+  if(cfr.data) state.config = { name:cfr.data.name, cuota:Number(cfr.data.cuota), dueDay:cfr.data.due_day };
+  state.audit = (ar.data||[]).map(a => ({ id:a.id, ts:a.ts, user:a.user_name, action:a.action, detail:a.detail }));
+}
 
 const CATS = {
   ingreso: ['Cuotas comunitarias','Donaciones','Eventos','Subsidios','Multas','Alquileres','Otros ingresos'],
@@ -953,26 +988,14 @@ const canWrite = () => ['admin','tesorero'].includes(currentUser?.role);
 const isAdmin  = () => currentUser?.role === 'admin';
 
 function audit(action, detail=''){
-  const log = DB.get(K.audit, []);
-  log.unshift({ id: uid('a'), ts: new Date().toISOString(), user: currentUser?.name || 'Sistema', action, detail });
-  DB.set(K.audit, log.slice(0, 1000));
+  const entry = { id:uid('a'), ts:new Date().toISOString(), user:currentUser?.name||'Sistema', action, detail };
+  state.audit.unshift(entry);
+  state.audit = state.audit.slice(0,1000);
+  supa.from('audit_log').insert({ id:entry.id, ts:entry.ts, user_name:entry.user, user_id:currentUser?.id||null, action, detail }).then(()=>{});
 }
 
-// Inicialización / migración desde la versión anterior (contraseñas en texto plano)
-function initData(){
-  let users = getUsers();
-  if(!users.length){
-    const salt = uid('s');
-    users = [{ id:'u1', name:'Admin Comunidad', email:'admin@comfin.co', salt, hash: hashPass('admin123', salt), role:'admin', active:true, createdAt:new Date().toISOString() }];
-  }
-  users = users.map(u => {
-    if(u.pass !== undefined && !u.hash){ const salt = uid('s'); u = { ...u, salt, hash: hashPass(u.pass, salt) }; delete u.pass; }
-    if(u.active === undefined) u.active = true;
-    u.email = (u.email||'').toLowerCase();
-    return u;
-  });
-  saveUsers(users);
-}
+function showLoader(){ $('#appLoader').style.display='flex'; }
+function hideLoader(){ $('#appLoader').style.display='none'; }
 
 // ═══════════════════════════════════════════
 //   AUTENTICACIÓN
@@ -983,18 +1006,21 @@ function flip(toRegister){
   setTimeout(() => (toRegister ? $('#regName') : $('#loginEmail')).focus(), 500);
 }
 
-function doLogin(){
+async function doLogin(){
   const email = $('#loginEmail').value.trim().toLowerCase();
   const pass  = $('#loginPass').value;
   const err   = $('#loginError');
   err.textContent = '';
   if(!email || !pass){ err.textContent = 'Ingresa correo y contraseña.'; return; }
-  const user = getUsers().find(u => u.email === email);
-  if(!user || user.hash !== hashPass(pass, user.salt)){ err.textContent = 'Correo o contraseña incorrectos.'; shake(); return; }
-  if(!user.active){ err.textContent = 'Tu cuenta está desactivada. Contacta al administrador.'; return; }
-  currentUser = user;
-  DB.set(K.session, user.id);
-  audit('LOGIN', 'Inicio de sesión');
+  showLoader();
+  const { data, error } = await supa.auth.signInWithPassword({ email, password:pass });
+  if(error){ hideLoader(); err.textContent = 'Correo o contraseña incorrectos.'; shake(); return; }
+  const { data:profile } = await supa.from('profiles').select('*').eq('id',data.user.id).single();
+  if(!profile || !profile.active){ hideLoader(); await supa.auth.signOut(); err.textContent = 'Tu cuenta está desactivada. Contacta al administrador.'; return; }
+  currentUser = dbToUser(profile);
+  await loadAllData();
+  hideLoader();
+  audit('LOGIN','Inicio de sesión');
   enterApp();
 }
 
@@ -1003,7 +1029,7 @@ function shake(){
   el.animate([{transform:'rotateY(0)'},{transform:'rotateY(-8deg)'},{transform:'rotateY(6deg)'},{transform:'rotateY(-3deg)'},{transform:'rotateY(0)'}], {duration:450});
 }
 
-function doRegister(){
+async function doRegister(){
   const name  = $('#regName').value.trim();
   const email = $('#regEmail').value.trim().toLowerCase();
   const pass  = $('#regPass').value, pass2 = $('#regPass2').value;
@@ -1013,20 +1039,26 @@ function doRegister(){
   if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){ err.textContent = 'Correo no válido.'; return; }
   if(pass.length < 6){ err.textContent = 'La contraseña debe tener mínimo 6 caracteres.'; return; }
   if(pass !== pass2){ err.textContent = 'Las contraseñas no coinciden.'; return; }
-  const users = getUsers();
-  if(users.some(u => u.email === email)){ err.textContent = 'Este correo ya está registrado.'; return; }
-  const salt = uid('s');
-  const newUser = { id: uid('u'), name, email, salt, hash: hashPass(pass, salt), role:'miembro', active:true, createdAt:new Date().toISOString() };
-  users.push(newUser); saveUsers(users);
-  currentUser = newUser; DB.set(K.session, newUser.id);
-  audit('REGISTRO', `Nuevo miembro: ${name}`);
+  showLoader();
+  const { data:existing } = await supa.from('profiles').select('id').eq('email',email).maybeSingle();
+  if(existing){ hideLoader(); err.textContent = 'Este correo ya está registrado.'; return; }
+  const { data, error } = await supa.auth.signUp({ email, password:pass });
+  if(error){ hideLoader(); err.textContent = error.message; return; }
+  const profile = { id:data.user.id, name, email, role:'miembro', active:true, created_at:new Date().toISOString() };
+  const { error:pErr } = await supa.from('profiles').insert(profile);
+  if(pErr){ hideLoader(); err.textContent = 'Error al crear perfil: '+pErr.message; return; }
+  currentUser = dbToUser(profile);
+  await loadAllData();
+  hideLoader();
+  audit('REGISTRO',`Nuevo miembro: ${name}`);
   enterApp();
 }
 
-function doLogout(){
-  audit('LOGOUT', 'Cierre de sesión');
+async function doLogout(){
+  audit('LOGOUT','Cierre de sesión');
+  await supa.auth.signOut();
   currentUser = null;
-  localStorage.removeItem(K.session);
+  Object.assign(state,{users:[],txs:[],cuotas:{},budgets:{},config:{},audit:[]});
   $('#appScreen').classList.remove('active');
   $('#loginScreen').classList.add('active');
   document.body.classList.remove('in-app');
@@ -1035,10 +1067,16 @@ function doLogout(){
   flip(false);
 }
 
-function checkSession(){
-  const sid = DB.get(K.session, '');
-  const u = sid && getUsers().find(u => u.id === sid && u.active);
-  if(u){ currentUser = u; enterApp(); }
+async function checkSession(){
+  showLoader();
+  const { data:{ session } } = await supa.auth.getSession();
+  if(!session){ hideLoader(); return; }
+  const { data:profile } = await supa.from('profiles').select('*').eq('id',session.user.id).single();
+  if(!profile || !profile.active){ hideLoader(); await supa.auth.signOut(); return; }
+  currentUser = dbToUser(profile);
+  await loadAllData();
+  hideLoader();
+  enterApp();
 }
 
 function enterApp(){
@@ -1176,7 +1214,7 @@ function setTxType(type){
   $('#btnTypeGasto').className   = 'btn' + (type === 'gasto' ? ' on-out' : '');
 }
 
-function saveTx(){
+async function saveTx(){
   if(!canWrite()) return;
   const desc = $('#txDesc').value.trim();
   const amount = parseFloat($('#txAmount').value);
@@ -1192,21 +1230,26 @@ function saveTx(){
   if(!date){ toast('Selecciona una fecha','error'); return; }
   if(date > today()){ toast('La fecha no puede ser futura','error'); return; }
 
-  const txs = getTxs();
   if(editId){
-    const idx = txs.findIndex(t => t.id === editId);
+    const idx = state.txs.findIndex(t => t.id === editId);
     if(idx > -1){
-      txs[idx] = { ...txs[idx], desc, amount, date, cat, method, ref, notes, type: currentTxType, updatedAt: new Date().toISOString(), updatedBy: currentUser.id };
-      audit('TX_EDITAR', `${desc} · ${fmt(amount)}`);
+      const updatedAt = new Date().toISOString();
+      state.txs[idx] = { ...state.txs[idx], desc, amount, date, cat, method, ref, notes, type:currentTxType, updatedAt, updatedBy:currentUser.id };
+      supa.from('transactions').update({ description:desc, amount, date, cat, method, ref, notes, type:currentTxType, updated_at:updatedAt, updated_by:currentUser.id }).eq('id',editId)
+        .then(({error})=>{ if(error) toast('Error al actualizar','error'); });
+      audit('TX_EDITAR',`${desc} · ${fmt(amount)}`);
     }
     toast('Transacción actualizada');
   } else {
-    txs.unshift({ id: uid('tx'), desc, amount, date, cat, method, ref, notes, type: currentTxType, user: currentUser.id, createdAt: new Date().toISOString() });
-    audit('TX_CREAR', `${currentTxType === 'ingreso' ? 'Ingreso' : 'Gasto'}: ${desc} · ${fmt(amount)}`);
+    const tx = { id:uid('tx'), desc, amount, date, cat, method, ref, notes, type:currentTxType, user:currentUser.id, createdAt:new Date().toISOString() };
+    state.txs.unshift(tx);
+    supa.from('transactions').insert(txToDb(tx))
+      .then(({error})=>{ if(error) toast('Error al guardar','error'); });
+    audit('TX_CREAR',`${currentTxType==='ingreso'?'Ingreso':'Gasto'}: ${desc} · ${fmt(amount)}`);
     toast('Transacción guardada');
     if(currentTxType === 'gasto') checkBudgetAfter(cat, date);
   }
-  saveTxs(sortTxs(txs));
+  state.txs = sortTxs(state.txs);
   closeModal('modalTransaction');
   rerender();
 }
@@ -1231,11 +1274,11 @@ function deleteTx(id){
   const tx = getTxs().find(t => t.id === id);
   if(!tx) return;
   confirmAction('¿Eliminar transacción?', `"${tx.desc}" por ${fmt(tx.amount)}. Esta acción no se puede deshacer.`, () => {
-    saveTxs(getTxs().filter(t => t.id !== id));
-    const cuotas = getCuotas();
-    Object.keys(cuotas).forEach(k => { if(cuotas[k] === id) delete cuotas[k]; });
-    DB.set(K.cuotas, cuotas);
-    audit('TX_ELIMINAR', `${tx.desc} · ${fmt(tx.amount)}`);
+    state.txs = state.txs.filter(t => t.id !== id);
+    Object.keys(state.cuotas).forEach(k => { if(state.cuotas[k] === id) delete state.cuotas[k]; });
+    supa.from('transactions').delete().eq('id',id)
+      .then(({error})=>{ if(error) toast('Error al eliminar','error'); });
+    audit('TX_ELIMINAR',`${tx.desc} · ${fmt(tx.amount)}`);
     toast('Transacción eliminada');
     rerender();
   }, 'Eliminar');
@@ -1386,11 +1429,7 @@ function renderFiltered(type){
 //   CUOTAS
 // ═══════════════════════════════════════════
 function cleanCuotas(){
-  const cuotas = getCuotas(), ids = new Set(getTxs().map(t => t.id));
-  let changed = false;
-  Object.keys(cuotas).forEach(k => { if(!ids.has(cuotas[k])){ delete cuotas[k]; changed = true; } });
-  if(changed) DB.set(K.cuotas, cuotas);
-  return cuotas;
+  return state.cuotas;
 }
 
 function fillYearSelect(sel){
@@ -1437,25 +1476,31 @@ function renderCuotas(){
   countUp($('#cuotaPct'), debido ? pagadas / debido * 100 : 0, fmtPct);
 }
 
-function toggleCuota(btn, userId, year, monthIdx){
+async function toggleCuota(btn, userId, year, monthIdx){
   if(!canWrite()) return;
   const cfg = getConfig(), user = getUsers().find(u => u.id === userId);
   const key = `${userId}|${year}-${pad2(monthIdx+1)}`;
-  const cuotas = getCuotas();
-  if(cuotas[key]){
+  if(state.cuotas[key]){
     confirmAction('¿Anular pago de cuota?', `Se eliminará el ingreso de ${user.name} correspondiente a ${MESES[monthIdx]} ${year}.`, () => {
-      saveTxs(getTxs().filter(t => t.id !== cuotas[key]));
-      delete cuotas[key]; DB.set(K.cuotas, cuotas);
-      audit('CUOTA_ANULAR', `${user.name} · ${MESES[monthIdx]} ${year}`);
+      const txId = state.cuotas[key];
+      state.txs = state.txs.filter(t => t.id !== txId);
+      delete state.cuotas[key];
+      supa.from('transactions').delete().eq('id',txId)
+        .then(({error})=>{ if(error) toast('Error al anular cuota','error'); });
+      audit('CUOTA_ANULAR',`${user.name} · ${MESES[monthIdx]} ${year}`);
       toast('Pago anulado'); renderCuotas();
     }, 'Anular pago');
     return;
   }
   if(!cfg.cuota){ toast('Define el valor de la cuota en Configuración','error'); return; }
-  const tx = { id: uid('tx'), desc: `Cuota ${MESES[monthIdx]} ${year} — ${user.name}`, amount: cfg.cuota, date: today(), cat: 'Cuotas comunitarias', method: 'Efectivo', ref: '', notes: '', type: 'ingreso', user: currentUser.id, member: userId, createdAt: new Date().toISOString() };
-  saveTxs(sortTxs([tx, ...getTxs()]));
-  cuotas[key] = tx.id; DB.set(K.cuotas, cuotas);
-  audit('CUOTA_PAGO', `${user.name} · ${MESES[monthIdx]} ${year} · ${fmt(cfg.cuota)}`);
+  const tx = { id:uid('tx'), desc:`Cuota ${MESES[monthIdx]} ${year} — ${user.name}`, amount:cfg.cuota, date:today(), cat:'Cuotas comunitarias', method:'Efectivo', ref:'', notes:'', type:'ingreso', user:currentUser.id, member:userId, createdAt:new Date().toISOString() };
+  state.txs = sortTxs([tx, ...state.txs]);
+  state.cuotas[key] = tx.id;
+  Promise.all([
+    supa.from('transactions').insert(txToDb(tx)),
+    supa.from('cuotas').insert({ cuota_key:key, user_id:userId, tx_id:tx.id, month_key:`${year}-${pad2(monthIdx+1)}` }),
+  ]).then(([{error:e1}])=>{ if(e1) toast('Error al guardar cuota','error'); });
+  audit('CUOTA_PAGO',`${user.name} · ${MESES[monthIdx]} ${year} · ${fmt(cfg.cuota)}`);
   btn.classList.add('paid','pop'); btn.classList.remove('late'); btn.textContent = '✓';
   toast(`Cuota registrada: ${user.name}`);
   setTimeout(renderCuotas, 650);
@@ -1499,10 +1544,16 @@ function renderPresupuestos(){
 
 function saveBudgets(){
   if(!canWrite()) return;
-  const budgets = {};
-  $$('#budgetTable input[data-cat]').forEach(i => { const v = parseFloat(i.value); if(v > 0) budgets[i.dataset.cat] = v; });
-  DB.set(K.budgets, budgets);
-  audit('PRESUPUESTO', `Actualizados ${Object.keys(budgets).length} presupuestos`);
+  const newBudgets = {};
+  $$('#budgetTable input[data-cat]').forEach(i => { const v = parseFloat(i.value); if(v > 0) newBudgets[i.dataset.cat] = v; });
+  const toDelete = Object.keys(state.budgets).filter(cat => !newBudgets[cat]);
+  state.budgets = newBudgets;
+  const rows = Object.entries(newBudgets).map(([cat,amount]) => ({cat,amount}));
+  const ops = [];
+  if(rows.length) ops.push(supa.from('budgets').upsert(rows));
+  if(toDelete.length) ops.push(supa.from('budgets').delete().in('cat',toDelete));
+  if(ops.length) Promise.all(ops).then(rs=>{ if(rs.some(r=>r.error)) toast('Error al guardar presupuestos','error'); });
+  audit('PRESUPUESTO',`Actualizados ${Object.keys(newBudgets).length} presupuestos`);
   toast('Presupuestos guardados');
   renderPresupuestos(); updateBudgetBadge();
 }
@@ -1703,27 +1754,30 @@ function renderUsuarios(){
 }
 
 function changeRole(id, role){
-  const users = getUsers(), u = users.find(u => u.id === id);
+  const u = state.users.find(u => u.id === id);
   if(!u || !isAdmin()) return;
-  u.role = role; saveUsers(users);
-  audit('ROL', `${u.name} → ${ROLES[role]}`);
+  u.role = role;
+  supa.from('profiles').update({role}).eq('id',id).then(({error})=>{ if(error) toast('Error al cambiar rol','error'); });
+  audit('ROL',`${u.name} → ${ROLES[role]}`);
   toast(`${u.name} ahora es ${ROLES[role]}`);
   renderUsuarios();
 }
 function toggleActive(id){
-  const users = getUsers(), u = users.find(u => u.id === id);
+  const u = state.users.find(u => u.id === id);
   if(!u || !isAdmin()) return;
-  u.active = !u.active; saveUsers(users);
-  audit('USUARIO', `${u.name} ${u.active ? 'activado' : 'desactivado'}`);
-  toast(`Usuario ${u.active ? 'activado' : 'desactivado'}`);
+  u.active = !u.active;
+  supa.from('profiles').update({active:u.active}).eq('id',id).then(({error})=>{ if(error) toast('Error al actualizar usuario','error'); });
+  audit('USUARIO',`${u.name} ${u.active?'activado':'desactivado'}`);
+  toast(`Usuario ${u.active?'activado':'desactivado'}`);
   renderUsuarios();
 }
 function deleteUser(id){
   const u = getUsers().find(u => u.id === id);
   if(!u || !isAdmin()) return;
   confirmAction('¿Eliminar usuario?', `Se eliminará la cuenta de ${u.name}. Sus transacciones se conservan. Si solo quieres bloquear el acceso, usa "Desactivar".`, () => {
-    saveUsers(getUsers().filter(x => x.id !== id));
-    audit('USUARIO_ELIMINAR', u.name);
+    state.users = state.users.filter(x => x.id !== id);
+    supa.from('profiles').delete().eq('id',id).then(({error})=>{ if(error) toast('Error al eliminar usuario','error'); });
+    audit('USUARIO_ELIMINAR',u.name);
     toast('Usuario eliminado'); renderUsuarios();
   }, 'Eliminar');
 }
@@ -1734,7 +1788,7 @@ function deleteUser(id){
 function renderAuditoria(){
   if(!isAdmin()) return;
   const q = $('#auditSearch').value.toLowerCase();
-  const log = DB.get(K.audit, []).filter(a => !q || [a.user, a.action, a.detail].some(v => (v||'').toLowerCase().includes(q))).slice(0, 300);
+  const log = state.audit.filter(a => !q || [a.user, a.action, a.detail].some(v => (v||'').toLowerCase().includes(q))).slice(0, 300);
   const color = a => a.includes('ELIMINAR') || a.includes('ANULAR') ? 'badge-red' : a.includes('CREAR') || a.includes('PAGO') ? 'badge-green' : a.startsWith('LOG') ? 'badge-muted' : 'badge-blue';
   $('#auditEmpty').style.display = log.length ? 'none' : 'block';
   const tbody = $('#auditTable');
@@ -1760,26 +1814,33 @@ function saveConfig(){
   const name = $('#cfgName').value.trim() || 'Mi Comunidad';
   const cuota = Math.max(0, parseFloat($('#cfgCuota').value) || 0);
   const dueDay = Math.min(28, Math.max(1, parseInt($('#cfgDay').value) || 10));
-  DB.set(K.config, { name, cuota, dueDay });
-  audit('CONFIG', `${name} · cuota ${fmt(cuota)} · día ${dueDay}`);
+  state.config = { name, cuota, dueDay };
+  supa.from('app_config').update({name,cuota,due_day:dueDay}).eq('id',1).then(({error})=>{ if(error) toast('Error al guardar configuración','error'); });
+  audit('CONFIG',`${name} · cuota ${fmt(cuota)} · día ${dueDay}`);
   toast('Configuración guardada'); refreshChrome(); renderConfig();
 }
-function changePassword(){
+async function changePassword(){
   const old = $('#pwOld').value, n1 = $('#pwNew').value, n2 = $('#pwNew2').value;
-  const users = getUsers(), u = users.find(u => u.id === currentUser.id);
-  if(u.hash !== hashPass(old, u.salt)){ toast('La contraseña actual no es correcta','error'); return; }
   if(n1.length < 6){ toast('La nueva contraseña debe tener mínimo 6 caracteres','error'); return; }
   if(n1 !== n2){ toast('Las contraseñas no coinciden','error'); return; }
-  u.salt = uid('s'); u.hash = hashPass(n1, u.salt); saveUsers(users); currentUser = u;
+  showLoader();
+  const { error:signInErr } = await supa.auth.signInWithPassword({ email:currentUser.email, password:old });
+  if(signInErr){ hideLoader(); toast('La contraseña actual no es correcta','error'); return; }
+  const { error } = await supa.auth.updateUser({ password:n1 });
+  hideLoader();
+  if(error){ toast('Error al cambiar contraseña','error'); return; }
   ['pwOld','pwNew','pwNew2'].forEach(id => $('#'+id).value = '');
-  audit('PASSWORD', 'Cambio de contraseña');
+  audit('PASSWORD','Cambio de contraseña');
   toast('Contraseña actualizada');
 }
 function exportBackup(){
-  const data = { app:'ComFin', version:2, exportedAt: new Date().toISOString() };
-  Object.entries(K).forEach(([name,key]) => { if(name !== 'session') data[name] = DB.get(key, null); });
-  download(`comfin_respaldo_${today()}.json`, JSON.stringify(data, null, 2), 'application/json');
-  audit('RESPALDO', 'Descarga de respaldo');
+  const data = { app:'ComFin', version:3, exportedAt:new Date().toISOString(),
+    users:state.users, txs:state.txs,
+    cuotas:Object.entries(state.cuotas).map(([k,v])=>({cuota_key:k,tx_id:v})),
+    budgets:Object.entries(state.budgets).map(([cat,amount])=>({cat,amount})),
+    config:state.config, audit:state.audit };
+  download(`comfin_respaldo_${today()}.json`, JSON.stringify(data,null,2), 'application/json');
+  audit('RESPALDO','Descarga de respaldo');
   toast('Respaldo descargado');
 }
 function importBackup(input){
@@ -1790,63 +1851,99 @@ function importBackup(input){
     let data;
     try { data = JSON.parse(reader.result); } catch { toast('Archivo no válido','error'); return; }
     if(data.app !== 'ComFin' || !Array.isArray(data.users) || !Array.isArray(data.txs)){ toast('El archivo no es un respaldo de ComFin','error'); return; }
-    confirmAction('¿Restaurar respaldo?', `Se reemplazarán todos los datos actuales por los del ${new Date(data.exportedAt).toLocaleString('es-CO')}.`, () => {
-      Object.entries(K).forEach(([name,key]) => { if(name !== 'session' && data[name] != null) DB.set(key, data[name]); });
-      initData();
-      audit('RESPALDO', 'Restauración de respaldo');
-      toast('Respaldo restaurado');
-      const me = getUsers().find(u => u.id === currentUser.id && u.active);
-      if(!me) return doLogout();
-      currentUser = me; refreshChrome(); goPage('dashboard');
+    confirmAction('¿Restaurar respaldo?', `Se importarán datos del ${new Date(data.exportedAt).toLocaleString('es-CO')}. Los registros existentes no se borran.`, async () => {
+      showLoader();
+      try {
+        if(data.users?.length) await supa.from('profiles').upsert(data.users.map(userToDb),{onConflict:'id'});
+        if(data.txs?.length) await supa.from('transactions').upsert(data.txs.map(txToDb),{onConflict:'id'});
+        const cuotasArr = Array.isArray(data.cuotas)
+          ? data.cuotas.map(c=>({cuota_key:c.cuota_key||c.key, tx_id:c.tx_id, user_id:(c.cuota_key||c.key)?.split('|')[0], month_key:(c.cuota_key||c.key)?.split('|')[1]}))
+          : Object.entries(data.cuotas||{}).map(([k,v])=>({cuota_key:k,tx_id:v,user_id:k.split('|')[0],month_key:k.split('|')[1]}));
+        if(cuotasArr.length) await supa.from('cuotas').upsert(cuotasArr,{onConflict:'cuota_key'});
+        const budgetArr = Array.isArray(data.budgets)
+          ? data.budgets
+          : Object.entries(data.budgets||{}).map(([cat,amount])=>({cat,amount}));
+        if(budgetArr.length) await supa.from('budgets').upsert(budgetArr,{onConflict:'cat'});
+        await loadAllData();
+        hideLoader();
+        audit('RESPALDO','Restauración de respaldo');
+        toast('Respaldo restaurado');
+        refreshChrome(); goPage('dashboard');
+      } catch(e){ hideLoader(); toast('Error al restaurar: '+e.message,'error'); }
     }, 'Restaurar');
   };
   reader.readAsText(file);
 }
 function resetData(){
   if(!isAdmin()) return;
-  confirmAction('¿Borrar todos los movimientos?', 'Se eliminarán transacciones, cuotas y presupuestos. Usuarios y configuración se conservan. Descarga un respaldo antes si lo necesitas.', () => {
-    saveTxs([]); DB.set(K.cuotas, {}); DB.set(K.budgets, {});
-    audit('RESET', 'Movimientos borrados');
+  confirmAction('¿Borrar todos los movimientos?', 'Se eliminarán transacciones, cuotas y presupuestos. Usuarios y configuración se conservan. Descarga un respaldo antes si lo necesitas.', async () => {
+    showLoader();
+    await Promise.all([
+      supa.from('transactions').delete().not('id','is',null),
+      supa.from('budgets').delete().not('cat','is',null),
+    ]);
+    state.txs=[]; state.cuotas={}; state.budgets={};
+    hideLoader();
+    audit('RESET','Movimientos borrados');
     toast('Movimientos borrados'); goPage('dashboard');
   }, 'Borrar todo');
 }
 function loadDemo(){
   if(!isAdmin()) return;
-  confirmAction('¿Cargar datos de demostración?', 'Se agregarán miembros y movimientos de ejemplo de los últimos 6 meses (no se borra lo existente).', () => {
-    const users = getUsers();
+  confirmAction('¿Cargar datos de demostración?', 'Se agregarán miembros y movimientos de ejemplo de los últimos 6 meses (no se borra lo existente).', async () => {
+    showLoader();
+    const existingEmails = new Set(state.users.map(u=>u.email));
     const demoNames = ['María Gómez','Carlos Ruiz','Ana Torres','Luis Pérez','Sofía Díaz','Jorge Ramírez','Valentina Rojas','Andrés Castro','Camila Herrera','Diego Morales','Laura Vargas','Felipe Ortiz'];
-    const sixAgo = new Date(new Date().getFullYear(), new Date().getMonth() - 5, 1).toISOString();
-    demoNames.forEach((name, i) => {
+    const sixAgo = new Date(new Date().getFullYear(), new Date().getMonth()-5, 1).toISOString();
+    const newUsers = [];
+    demoNames.forEach((name,i) => {
       const email = `demo${i+1}@comfin.co`;
-      if(!users.some(u => u.email === email)){ const salt = uid('s'); users.push({ id: uid('u'), name, email, salt, hash: hashPass('demo123', salt), role: i === 0 ? 'tesorero' : 'miembro', active:true, createdAt: sixAgo }); }
+      if(!existingEmails.has(email)){
+        newUsers.push({ id:uid('u'), name, email, role:i===0?'tesorero':'miembro', active:true, createdAt:sixAgo });
+        existingEmails.add(email);
+      }
     });
-    saveUsers(users);
-    const cfg = getConfig(), txs = getTxs(), cuotas = getCuotas(), now = new Date();
-    const rnd = (a,b) => Math.round((a + Math.random()*(b-a)) / 1000) * 1000;
-    const add = (type, cat, desc, amount, d) => { const t = { id: uid('tx'), desc, amount, date: d, cat, method: ['Efectivo','Transferencia','Consignación'][Math.floor(Math.random()*3)], ref: type === 'gasto' ? 'FAC-' + Math.floor(1000+Math.random()*9000) : '', notes:'', type, user: currentUser.id, createdAt: new Date().toISOString() }; txs.push(t); return t; };
-    for(let m = 5; m >= 0; m--){
-      const base = new Date(now.getFullYear(), now.getMonth() - m, 1);
-      const lastDay = m === 0 ? now.getDate() : new Date(base.getFullYear(), base.getMonth()+1, 0).getDate();
-      const day = n => `${base.getFullYear()}-${pad2(base.getMonth()+1)}-${pad2(Math.min(n, lastDay))}`;
-      users.filter(u => u.active).forEach(u => {
-        if(Math.random() < (m === 0 ? 0.55 : 0.85)){
-          const key = `${u.id}|${monthKey(base)}`;
-          if(!cuotas[key]){ const t = add('ingreso','Cuotas comunitarias',`Cuota ${MESES[base.getMonth()]} ${base.getFullYear()} — ${u.name}`, cfg.cuota || 50000, day(2 + Math.floor(Math.random()*9))); t.member = u.id; cuotas[key] = t.id; }
+    if(newUsers.length){
+      await supa.from('profiles').insert(newUsers.map(userToDb));
+      state.users.push(...newUsers);
+    }
+    const users = state.users.filter(u=>u.active);
+    const cfg = getConfig(), now = new Date();
+    const rnd = (a,b) => Math.round((a+Math.random()*(b-a))/1000)*1000;
+    const newTxs=[], newCuotas=[];
+    const add = (type,cat,desc,amount,d) => {
+      const t={ id:uid('tx'),desc,amount,date:d,cat,method:['Efectivo','Transferencia','Consignación'][Math.floor(Math.random()*3)],ref:type==='gasto'?'FAC-'+Math.floor(1000+Math.random()*9000):'',notes:'',type,user:currentUser.id,createdAt:new Date().toISOString() };
+      newTxs.push(t); return t;
+    };
+    for(let m=5;m>=0;m--){
+      const base=new Date(now.getFullYear(),now.getMonth()-m,1);
+      const lastDay=m===0?now.getDate():new Date(base.getFullYear(),base.getMonth()+1,0).getDate();
+      const day=n=>`${base.getFullYear()}-${pad2(base.getMonth()+1)}-${pad2(Math.min(n,lastDay))}`;
+      users.forEach(u=>{
+        if(Math.random()<(m===0?.55:.85)){
+          const key=`${u.id}|${monthKey(base)}`;
+          if(!state.cuotas[key]){ const t=add('ingreso','Cuotas comunitarias',`Cuota ${MESES[base.getMonth()]} ${base.getFullYear()} — ${u.name}`,cfg.cuota||50000,day(2+Math.floor(Math.random()*9))); t.member=u.id; newCuotas.push({cuota_key:key,user_id:u.id,tx_id:t.id,month_key:monthKey(base)}); state.cuotas[key]=t.id; }
         }
       });
-      if(m === 5) add('ingreso','Otros ingresos','Saldo inicial de caja', 1200000, day(1));
-      add('gasto','Servicios públicos','Energía zonas comunes', rnd(90000,130000), day(5));
-      add('gasto','Servicios públicos','Acueducto', rnd(40000,60000), day(6));
-      add('gasto','Aseo','Servicio de aseo mensual', rnd(100000,140000), day(8));
-      add('gasto','Seguridad','Vigilancia nocturna', rnd(200000,260000), day(10));
-      if(Math.random() < .6) add('gasto','Mantenimiento','Reparación portón / luminarias', rnd(80000,260000), day(15));
-      if(Math.random() < .4) add('ingreso','Eventos','Bazar comunitario', rnd(200000,600000), day(20));
-      if(Math.random() < .3) add('ingreso','Donaciones','Donación vecino', rnd(50000,200000), day(12));
-      if(Math.random() < .3) add('gasto','Eventos','Refrigerios reunión mensual', rnd(60000,140000), day(22));
+      if(m===5) add('ingreso','Otros ingresos','Saldo inicial de caja',1200000,day(1));
+      add('gasto','Servicios públicos','Energía zonas comunes',rnd(90000,130000),day(5));
+      add('gasto','Servicios públicos','Acueducto',rnd(40000,60000),day(6));
+      add('gasto','Aseo','Servicio de aseo mensual',rnd(100000,140000),day(8));
+      add('gasto','Seguridad','Vigilancia nocturna',rnd(200000,260000),day(10));
+      if(Math.random()<.6) add('gasto','Mantenimiento','Reparación portón / luminarias',rnd(80000,260000),day(15));
+      if(Math.random()<.4) add('ingreso','Eventos','Bazar comunitario',rnd(200000,600000),day(20));
+      if(Math.random()<.3) add('ingreso','Donaciones','Donación vecino',rnd(50000,200000),day(12));
+      if(Math.random()<.3) add('gasto','Eventos','Refrigerios reunión mensual',rnd(60000,140000),day(22));
     }
-    saveTxs(sortTxs(txs)); DB.set(K.cuotas, cuotas);
-    if(!Object.keys(getBudgets()).length) DB.set(K.budgets, { 'Servicios públicos':180000, 'Aseo':130000, 'Seguridad':250000, 'Mantenimiento':200000, 'Eventos':100000 });
-    audit('DEMO', 'Datos de demostración cargados');
+    if(newTxs.length){ await supa.from('transactions').insert(newTxs.map(txToDb)); state.txs=sortTxs([...state.txs,...newTxs]); }
+    if(newCuotas.length) await supa.from('cuotas').insert(newCuotas);
+    if(!Object.keys(state.budgets).length){
+      const defB=[{cat:'Servicios públicos',amount:180000},{cat:'Aseo',amount:130000},{cat:'Seguridad',amount:250000},{cat:'Mantenimiento',amount:200000},{cat:'Eventos',amount:100000}];
+      await supa.from('budgets').insert(defB);
+      defB.forEach(b=>{ state.budgets[b.cat]=b.amount; });
+    }
+    hideLoader();
+    audit('DEMO','Datos de demostración cargados');
     toast('Datos de demostración cargados'); goPage('dashboard');
   }, 'Cargar');
 }
@@ -2009,7 +2106,6 @@ const Scene3D = (() => {
 // ═══════════════════════════════════════════
 //   INICIO
 // ═══════════════════════════════════════════
-initData();
 bindTilt();
 checkSession();
 </script>
