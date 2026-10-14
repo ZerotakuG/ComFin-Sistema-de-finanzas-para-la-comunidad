@@ -1042,12 +1042,19 @@ async function doRegister(){
   showLoader();
   const { data:existing } = await supa.from('profiles').select('id').eq('email',email).maybeSingle();
   if(existing){ hideLoader(); err.textContent = 'Este correo ya está registrado.'; return; }
-  const { data, error } = await supa.auth.signUp({ email, password:pass });
+  // El nombre va como metadata; el trigger de DB crea el perfil automáticamente (SECURITY DEFINER)
+  const { data, error } = await supa.auth.signUp({ email, password:pass, options:{ data:{ name } } });
   if(error){ hideLoader(); err.textContent = error.message; return; }
-  const profile = { id:data.user.id, name, email, role:'miembro', active:true, created_at:new Date().toISOString() };
-  const { error:pErr } = await supa.from('profiles').insert(profile);
-  if(pErr){ hideLoader(); err.textContent = 'Error al crear perfil: '+pErr.message; return; }
-  currentUser = dbToUser(profile);
+  // Sin sesión = Supabase requiere confirmación de email
+  if(!data.session){
+    hideLoader();
+    err.style.color = 'var(--accent)';
+    err.textContent = '✅ Registro exitoso. Revisa tu correo y confirma tu cuenta para iniciar sesión.';
+    return;
+  }
+  // Sesión activa: cargar perfil creado por el trigger
+  const { data:profile } = await supa.from('profiles').select('*').eq('id',data.user.id).single();
+  currentUser = profile ? dbToUser(profile) : { id:data.user.id, name, email, role:'miembro', active:true, createdAt:new Date().toISOString() };
   await loadAllData();
   hideLoader();
   audit('REGISTRO',`Nuevo miembro: ${name}`);
